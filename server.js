@@ -54,6 +54,60 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Root endpoint to help with configuration
+app.get('/', (req, res) => {
+  res.json({
+    service: 'OpenAI to NVIDIA NIM Proxy',
+    status: 'running',
+    endpoints: {
+      health: '/health',
+      models: '/v1/models',
+      chat: '/v1/chat/completions'
+    },
+    setup_instructions: 'Use base URL without /v1 suffix in your API client'
+  });
+});
+
+// Handle /v1 endpoint
+app.get('/v1', (req, res) => {
+  res.json({
+    service: 'OpenAI to NVIDIA NIM Proxy',
+    version: 'v1',
+    available_endpoints: ['/v1/models', '/v1/chat/completions']
+  });
+});
+
+app.post('/v1', (req, res) => {
+  res.status(400).json({
+    error: {
+      message: 'Invalid endpoint. Use /v1/chat/completions for chat requests.',
+      type: 'invalid_endpoint',
+      code: 400
+    }
+  });
+});
+
+// Also handle POST to root - redirect to chat completions
+app.post('/', async (req, res) => {
+  // If request has messages, treat it as a chat request
+  if (req.body && req.body.messages) {
+    console.log('Received chat request at root /, processing as /v1/chat/completions');
+    // Forward to chat completions handler
+    req.url = '/v1/chat/completions';
+    return app.handle(req, res);
+  }
+  
+  res.status(400).json({
+    error: {
+      message: 'Please configure your client to use the full endpoint URL',
+      type: 'invalid_endpoint',
+      code: 400,
+      correct_url: 'https://your-domain.up.railway.app/v1/chat/completions',
+      received_body: Object.keys(req.body || {})
+    }
+  });
+});
+
 // List models endpoint (OpenAI compatible)
 app.get('/v1/models', (req, res) => {
   const models = Object.keys(MODEL_MAPPING).map(model => ({
@@ -70,8 +124,10 @@ app.get('/v1/models', (req, res) => {
 });
 
 // Chat completions endpoint (main proxy)
-app.post('/v1/chat/completions', async (req, res) => {
+const handleChatCompletion = async (req, res) => {
+  const startTime = Date.now();
   try {
+    console.log('Received chat request for model:', req.body.model);
     const { model, messages, temperature, max_tokens, stream } = req.body;
     
     // Truncate message history if too large (keep last 10 messages + system)
@@ -200,7 +256,10 @@ app.post('/v1/chat/completions', async (req, res) => {
         });
       });
       
-      response.data.on('end', () => res.end());
+      response.data.on('end', () => {
+        console.log(`Stream completed in ${Date.now() - startTime}ms`);
+        res.end();
+      });
       response.data.on('error', (err) => {
         console.error('Stream error:', err);
         res.end();
@@ -235,6 +294,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         }
       };
       
+      console.log(`Non-stream request completed in ${Date.now() - startTime}ms`);
       res.json(openaiResponse);
     }
     
@@ -286,13 +346,23 @@ app.post('/v1/chat/completions', async (req, res) => {
   }
 });
 
-// Catch-all for unsupported endpoints
+// Catch-all for unsupported endpoints - redirect POST requests to chat completions
 app.all('*', (req, res) => {
+  // If it's a POST request with messages, treat it as a chat request
+  if (req.method === 'POST' && req.body && (req.body.messages || req.body.prompt)) {
+    console.log(`Redirecting ${req.method} ${req.path} to /v1/chat/completions`);
+    req.url = '/v1/chat/completions';
+    return app._router.handle(req, res);
+  }
+  
   res.status(404).json({
     error: {
       message: `Endpoint ${req.path} not found`,
       type: 'invalid_request_error',
-      code: 404
+      code: 404,
+      received_path: req.path,
+      received_method: req.method,
+      hint: 'Use base URL without any path. Janitor AI should add /v1/chat/completions automatically.'
     }
   });
 });
