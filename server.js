@@ -186,10 +186,12 @@ const handleChatCompletion = async (req, res) => {
       model: nimModel,
       messages: truncatedMessages,
       temperature: temperature || 0.6,
-      max_tokens: max_tokens || 9024,
+      max_tokens: Math.min(max_tokens || 2048, 2048), // Limit to 2048 tokens
       extra_body: ENABLE_THINKING_MODE ? { chat_template_kwargs: { thinking: true } } : undefined,
       stream: stream || false
     };
+    
+    console.log(`Sending request to NVIDIA: ${nimModel}, ${truncatedMessages.length} messages, max_tokens: ${nimRequest.max_tokens}`);
     
     // Make request to NVIDIA NIM API with timeout
     const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
@@ -198,9 +200,9 @@ const handleChatCompletion = async (req, res) => {
         'Content-Type': 'application/json'
       },
       responseType: stream ? 'stream' : 'json',
-      timeout: 120000, // 2 minute timeout
-      maxContentLength: 100 * 1024 * 1024, // 100MB
-      maxBodyLength: 100 * 1024 * 1024 // 100MB
+      timeout: 60000, // Reduced to 60 seconds
+      maxContentLength: 50 * 1024 * 1024, // 50MB
+      maxBodyLength: 50 * 1024 * 1024 // 50MB
     });
     
     if (stream) {
@@ -356,7 +358,7 @@ const handleChatCompletion = async (req, res) => {
       }
     });
   }
-});
+};
 
 // Apply handler to multiple routes
 app.post('/v1/chat/completions', handleChatCompletion);
