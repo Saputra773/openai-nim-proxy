@@ -54,7 +54,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Root endpoint to help with configuration
+// Root endpoint for non-chat GET requests
 app.get('/', (req, res) => {
   res.json({
     service: 'OpenAI to NVIDIA NIM Proxy',
@@ -78,6 +78,10 @@ app.get('/v1', (req, res) => {
 });
 
 app.post('/v1', (req, res) => {
+  // If has messages, handle as chat
+  if (req.body && req.body.messages) {
+    return handleChatCompletion(req, res);
+  }
   res.status(400).json({
     error: {
       message: 'Invalid endpoint. Use /v1/chat/completions for chat requests.',
@@ -138,6 +142,14 @@ const handleChatCompletion = async (req, res) => {
       truncatedMessages = [...systemMessages, ...otherMessages.slice(-10)];
       console.log(`Truncated messages from ${messages.length} to ${truncatedMessages.length}`);
     }
+    
+    // Further truncate individual message content if too long
+    truncatedMessages = truncatedMessages.map(msg => {
+      if (msg.content && msg.content.length > 4000) {
+        return { ...msg, content: msg.content.substring(0, 4000) + '...[truncated]' };
+      }
+      return msg;
+    });
     
     // Smart model selection with fallback
     let nimModel = MODEL_MAPPING[model];
@@ -346,23 +358,32 @@ const handleChatCompletion = async (req, res) => {
   }
 });
 
-// Catch-all for unsupported endpoints - redirect POST requests to chat completions
-app.all('*', (req, res) => {
-  // If it's a POST request with messages, treat it as a chat request
-  if (req.method === 'POST' && req.body && (req.body.messages || req.body.prompt)) {
-    console.log(`Redirecting ${req.method} ${req.path} to /v1/chat/completions`);
-    req.url = '/v1/chat/completions';
-    return app._router.handle(req, res);
+// Apply handler to multiple routes
+app.post('/v1/chat/completions', handleChatCompletion);
+app.post('/chat/completions', handleChatCompletion);
+app.post('/', (req, res, next) => {
+  // Only handle as chat if it has messages
+  if (req.body && req.body.messages) {
+    return handleChatCompletion(req, res);
   }
+  next();
+});
+
+// Catch-all for unsupported endpoints
+app.all('*', (req, res) => {
+  console.log(`404 - ${req.method} ${req.path}`);
+  console.log('Body:', JSON.stringify(req.body).substring(0, 200));
   
   res.status(404).json({
     error: {
       message: `Endpoint ${req.path} not found`,
-      type: 'invalid_request_error',
+      type: 'invalid_request_error', 
       code: 404,
-      received_path: req.path,
-      received_method: req.method,
-      hint: 'Use base URL without any path. Janitor AI should add /v1/chat/completions automatically.'
+      debug: {
+        path: req.path,
+        method: req.method,
+        has_messages: !!(req.body && req.body.messages)
+      }
     }
   });
 });
